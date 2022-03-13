@@ -1,2 +1,7 @@
 .idea
 results.csv
+*.csv
+.DS_Store
+*.pyc
+__pycache__
+scrapy.log

@@ -3,7 +3,8 @@ import requests
 
 # api-endpoint
 #URL = "https://www.propertyguru.com.sg/simple-listing/property-for-sale?freetext=Jurong+East%2C+Jurong+West&hdb_estate%5B%5D=13&hdb_estate%5B%5D=14&market=residential&property_type=H&property_type_code%5B%5D=4A&property_type_code%5B%5D=4I&property_type_code%5B%5D=4NG&property_type_code%5B%5D=4S&property_type_code%5B%5D=4STD"
-URL = "https://in.finance.yahoo.com/quote/MSFT?p=MSFT"
+#URL = "https://in.finance.yahoo.com/quote/MSFT?p=MSFT"
+URL = "https://www.trulia.com/sold/Saint_Louis,MO/"
 
 # location given here
 location = "delhi technological university"

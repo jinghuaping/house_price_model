@@ -1,57 +1,33 @@
 import scrapy
-from house_price_scraper.items import HousePriceScraperItem  # this refer to name of project
+# this refer to name of project
+from house_price_scraper.items import HousePriceScraperItem, HousePriceScraperItemLoader
 import csv
 import os
+import re
 import logging
 import random
 from scrapy.loader import ItemLoader
 from scrapy.crawler import CrawlerProcess
 from scrapy import Request
 from scrapy.utils.project import get_project_settings
+from scrapy.linkextractors import LinkExtractor
 from datetime import datetime
-
-
-class CraigslistItem(scrapy.Item):
-    # define the fields for your item here like:
-    # name = scrapy.Field()
-    date = scrapy.Field()
-    title = scrapy.Field()
-    price = scrapy.Field()
-    hood = scrapy.Field()
-    link = scrapy.Field()
-    misc = scrapy.Field()
-    lon = scrapy.Field()
-    lat = scrapy.Field()
+from math import ceil
+import json
 
 
 class HousePriceSpider(scrapy.Spider):
-    try:
-        now = datetime.now()  # current date and time
-        date_time = now.strftime("%Y-%m-%d_%H_%M")
-        file_name = f'results_{date_time}.csv'
-        os.remove(file_name)
-    except OSError:
-        pass
-
     def __init__(self):
-        self.lat = ""
-        self.lon = ""
+        self.le = LinkExtractor(allow=r'^https://www.trulia.com/property')
 
     name = "house_price"
     headers = {
         "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36"
     }
     user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36"
-    # allowed_domains = ['propertyguru.com.sg']
-    """
-    start_urls = [
-        r'http://www.propertyguru.com.sg/simple-listing/property-for-sale?market=residential&property_type_code%5B%5D=4A&property_type_code%5B%5D=4NG&property_type_code%5B%5D=4S&property_type_code%5B%5D=4I&property_type_code%5B%5D=4STD&property_type=H&freetext=Jurong+East%2C+Jurong+West&hdb_estate%5B%5D=13&hdb_estate%5B%5D=14'
-    ]
-    start_urls = ["https://in.finance.yahoo.com/quote/MSFT?p=MSFT",
-                  "https://in.finance.yahoo.com/quote/MSFT/key-statistics?p=MSFT",
-                  "https://in.finance.yahoo.com/quote/MSFT/holders?p=MSFT"]
-    """
-    start_urls = ['http://stlouis.craigslist.org/d/real-estate/search/rea/']
+    allowed_domains = ['trulia.com']
+    #start_urls = ['https://www.trulia.com/sold/Saint_Louis,MO/']
+    start_urls = ['https://www.trulia.com/MO/Saint_Louis/']
     user_agent_list = [
         'Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:63.0) Gecko/20100101 Firefox/63.0',
         'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.79',
@@ -73,140 +49,114 @@ class HousePriceSpider(scrapy.Spider):
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36"
     ]
 
-    """
-    def start_requests(self):
-        for url in self.start_urls:
-            #user_agent = random.choice(self.user_agent_list)
-            #self.headers["user-agent"] = user_agent
-            yield scrapy.Request(url, headers=self.headers)
-    """
-
-    def start_requests(self):
-        user_agent = random.choice(self.user_agent_list)
-        self.headers["user-agent"] = user_agent
-        yield scrapy.Request('http://stlouis.craigslist.org/d/real-estate/search/rea/', callback=self.parse,
-                             headers=self.headers)
+    def last_pagenumber_in_search(self, response):
+        """ Returns the number of the last page on the CITY/locale page """
+        resultsHtml = response.xpath('.//*/text()[contains(., " Results")]')
+        try:
+            self.logger.info(f'{str(resultsHtml)}')
+            self.logger.info(resultsHtml[2].root[:-8]
+                             [8:] + " results to scrape..")
+            #number_of_results = int(resultsHtml[2].root.re_first(r'^1 - (\d+) of [\d,]+ Results$').replace(',', ''))
+            number_of_results = int(
+                resultsHtml[2].root[:-8][8:].replace(',', ''))
+            self.logger.info('number of pages: %s', str(number_of_results))
+            return ceil(number_of_results/30)
+        except Exception as e:
+            self.logger.info('Exception: %s', str(e))
+            return 0
 
     def parse(self, response):
+        #N = self.last_pagenumber_in_search(response)
+        N = self.get_number_of_pages_to_scrape(response)
+        self.logger.info(
+            "Determined that property pages are contained on {N} different index pages, each containing at most 30 properties. Proceeding to scrape each index page...".format(N=N))
+        for url in [response.urljoin("{n}_p/".format(n=n)) for n in range(1, N+1)]:
+            yield scrapy.Request(url=url, callback=self.parse_index_page)
 
-        all_ads = response.xpath('//div[@class="result-info"]')
-        for ads in all_ads:
-            price = ads.xpath(".//span[@class='result-price']/text()").get()
-            date = ads.xpath(".//time[@class='result-date']/text()").get()
-            title = ads.xpath(".//a[@class='result-title hdrlnk']/text()").get()
-            hood = ads.xpath(".//span[@class='result-hood']/text()").get()
-            details_link = ads.xpath(".//a[@class='result-title hdrlnk']/@href").get()
+    def get_number_of_pages_to_scrape(self, response):
+        pagination = response.xpath('.//*/text()[contains(., " Results")]')
+        number_of_results = int(pagination.re_first(r'^1-40 of ([\d,]+) Results$').replace(',', ''))
+        return ceil(number_of_results/40)
 
-            # call parse_details and pass all of the above to it
-            request = Request(url=details_link, callback=self.parse_detail, cb_kwargs={
-                'price': price,
-                'date': date,
-                'title': title,
-                'hood': hood,
-                'details_link': details_link
-            })
+    def parse_index_page(self, response):
+        self.logger.info(f'parse_index_page response: {str(response)}')
+        for link in self.le.extract_links(response):
+            yield scrapy.Request(url=link.url, callback=self.parse_property_page)
 
-            yield request
+    def parse_property_page(self, response):
+        l = HousePriceScraperItemLoader(item=HousePriceScraperItem(), response=response)
+        self.logger.info(f'parse_property_page response: {str(response)}')
+        self.load_common_fields(item_loader=l, response=response)
 
-        # Get the next 25 properties from 'next page' - persist until no more #
-        next_page = response.xpath("//a[@class='button next']/@href").get()
-        if next_page:
-            yield response.follow(url=next_page, callback=self.parse)
+        listing_information = l.nested_xpath(
+            '//span[text() = "LISTING INFORMATION"]')
+        listing_information.add_xpath(
+            'listing_information', './parent::div/following-sibling::ul[1]/li/text()')
+        listing_information.add_xpath(
+            'listing_information_date_updated', './following-sibling::span/text()', re=r'^Updated: (.*)')
 
-    def parse_detail(self, response, price, date, title, hood, details_link):
+        public_records = l.nested_xpath('//span[text() = "PUBLIC RECORDS"]')
+        public_records.add_xpath(
+            'public_records', './parent::div/following-sibling::ul[1]/li/text()')
+        public_records.add_xpath('public_records_date_updated',
+                                 './following-sibling::span/text()', re=r'^Updated: (.*)')
 
-        lon = response.xpath('//meta[@name="geo.position"]/@content').get().split(";")[0]
-        lat = response.xpath('//meta[@name="geo.position"]/@content').get().split(";")[1]
+        item = l.load_item()
+        self.post_process(item=item)
+        return item
 
-        yield {
-            'price': price,
-            'date': date,
-            'title': title,
-            'hood': hood,
-            'details_link': details_link,
-            'lon': lon,
-            'lat': lat
-        }
+    @staticmethod
+    def load_common_fields(item_loader, response):
+        '''Load field values which are common to "on sale" and "recently sold" properties.'''
+        item_loader.add_value('url', response.url)
+        item_loader.add_xpath('address', '//*[@data-role="address"]/text()')
+        item_loader.add_xpath(
+            'city_state', '//*[@data-role="cityState"]/text()')
+        item_loader.add_xpath(
+            'price', '//span[@data-role="price"]/text()', re=r'\$([\d,]+)')
+        item_loader.add_xpath(
+            'neighborhood', '//*[@data-role="cityState"]/parent::h1/following-sibling::span/a/text()')
+        details = item_loader.nested_css('.homeDetailsHeading')
+        overview = details.nested_xpath(
+            './/span[contains(text(), "Overview")]/parent::div/following-sibling::div[1]')
+        overview.add_xpath('overview', xpath='.//li/text()')
+        overview.add_xpath('area', xpath='.//li/text()', re=r'([\d,]+) sqft$')
+        overview.add_xpath('lot_size', xpath='.//li/text()',
+                           re=r'([\d,.]+) (?:acres|sqft) lot size$')
+        overview.add_xpath('lot_size_units', xpath='.//li/text()',
+                           re=r'[\d,.]+ (acres|sqft) lot size$')
+        overview.add_xpath('price_per_square_foot',
+                           xpath='.//li/text()', re=r'\$([\d,.]+)/sqft$')
+        overview.add_xpath('bedrooms', xpath='.//li/text()',
+                           re=r'(\d+) (?:Beds|Bed|beds|bed)$')
+        overview.add_xpath('bathrooms', xpath='.//li/text()',
+                           re=r'(\d+) (?:Baths|Bath|baths|bath)$')
+        overview.add_xpath(
+            'year_built', xpath='.//li/text()', re=r'Built in (\d+)')
+        overview.add_xpath('days_on_Trulia', xpath='.//li/text()',
+                           re=r'([\d,]) days on Trulia$')
+        overview.add_xpath('views', xpath='.//li/text()',
+                           re=r'([\d,]+) views$')
+        item_loader.add_css('description', '#descriptionContainer *::text')
 
-    """
-    def parse(self, response):
-        filename = response.url.split("/")[-2] + '.html'
-        print('filename', filename)
+        price_events = details.nested_xpath(
+            './/*[text() = "Price History"]/parent::*/following-sibling::*[1]/div/div')
+        price_events.add_xpath('prices', './div[contains(text(), "$")]/text()')
+        price_events.add_xpath(
+            'dates', './div[contains(text(), "$")]/preceding-sibling::div/text()')
+        price_events.add_xpath(
+            'events', './div[contains(text(), "$")]/following-sibling::div/text()')
 
-        with open(filename, 'wb') as f:
-            f.write(response.body)
-    """
-
-    """
-    # Parsing function
-    def parse(self, response):
-
-        # Using xpath to extract all the table rows
-        data = response.xpath('//div[@id="quote-summary"]/div/table/tbody/tr')
-
-        # If data is not empty
-        if data:
-
-            # Extracting all the text within HTML tags
-            values = data.css('*::text').getall()
-
-            # CSV Filename
-            filename = 'quote.csv'
-
-            # If data to be written is not empty
-            if len(values) != 0:
-
-                # Open the CSV File
-                with open(filename, 'a+', newline='') as file:
-
-                    # Writing in the CSV file
-                    f = csv.writer(file)
-                    for i in range(0, len(values[:24]), 2):
-                        f.writerow([values[i], values[i + 1]])
-
-        # Using xpath to extract all the table rows
-        data = response.xpath('//section[@data-test="qsp-statistics"]//table/tbody/tr')
-
-        if data:
-
-            # Extracting all the table names
-            values = data.css('span::text').getall()
-
-            # Extracting all the table values
-            values1 = data.css('td::text').getall()
-
-            # Cleaning the received vales
-            values1 = [value for value in values1 if value != ' ' and (value[0] != '(' or value[-1] != ')')]
-
-            # Opening and writing in a CSV file
-            filename = 'stats.csv'
-
-            if len(values) != 0:
-                with open(filename, 'a+', newline='') as file:
-                    f = csv.writer(file)
-                    for i in range(9):
-                        f.writerow([values[i], values1[i]])
-
-        # Using xpath to extract all the table rows
-        data = response.xpath('//div[@data-test="holder-summary"]//table')
-        print('data:', data)
-
-        if data:
-            # Extracting all the table names
-            values = data.css('span::text').getall()
-
-            # Extracting all the table values
-            values1 = data.css('td::text').getall()
-
-            # Opening and writing in a CSV file
-            filename = 'holders.csv'
-
-            if len(values) != 0:
-                with open(filename, 'a+', newline='') as file:
-                    f = csv.writer(file)
-                    for i in range(len(values)):
-                        f.writerow([values[i], values1[i]])
-    """
+    @staticmethod
+    def post_process(item):
+        '''Add any additional data to an item after loading it'''
+        if item.get('dates') is not None:
+            dates = [datetime.datetime.strptime(
+                date, '%m/%d/%Y') for date in item['dates']]
+            prices = [int(price.lstrip('$').replace(',', ''))
+                      for price in item['prices']]
+            item['price_history'] = sorted(
+                list(zip(dates, prices, item['events'])), key=lambda x: x[0])
 
 
 # main driver #
@@ -214,12 +164,12 @@ if __name__ == "__main__":
     # Create Instance called 'cl' as in "c"raigs "l"ist
     now = datetime.now()  # current date and time
     date_time = now.strftime("%Y-%m-%d_%H_%M")
-    file_name = f'results_{date_time}.csv'
+    file_name = f'results_{date_time}_main.csv'
 
     s = get_project_settings()
     s['FEED_FORMAT'] = 'csv'
     s['LOG_LEVEL'] = 'INFO'
-    s['FEED_URI'] = file_name
+    #s['FEED_URI'] = file_name
     s['LOG_FILE'] = 'scrapy.log'
     """
     cl = CrawlerProcess(settings={
