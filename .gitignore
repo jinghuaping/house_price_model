@@ -5,3 +5,4 @@ results.csv
 *.pyc
 __pycache__
 scrapy.log
+.ipynb_checkpoints/
